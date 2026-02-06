@@ -1,0 +1,255 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "owner": {
+          "__rl": true,
+          "value": "devserver11",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "n8n_pr_review",
+          "mode": "name"
+        },
+        "events": [
+          "pull_request"
+        ],
+        "options": {}
+      },
+      "id": "a8ab5820-6b92-454a-b947-fc8793ef1544",
+      "name": "PR Trigger",
+      "type": "n8n-nodes-base.githubTrigger",
+      "typeVersion": 1,
+      "position": [
+        640,
+        -304
+      ],
+      "webhookId": "e24a481c-adb5-4de8-b997-5345412e7a0a",
+      "credentials": {
+        "githubApi": {
+          "id": "O3mhFBslBIPr5VwW",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.action }}",
+              "rightValue": "opened",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2e8444b3-3adc-4457-b4f4-9ed1b74539a8",
+      "name": "Filter PR Opened",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        848,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.pull_request.url + '/files?per_page=50' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "options": {}
+      },
+      "id": "5691c1b1-6c59-48f5-8b0d-43c7f098fd8e",
+      "name": "Get PR Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        -304
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "O3mhFBslBIPr5VwW",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let prompt = `You are a senior software engineer.\\nReview the following pull request and provide:\\n- Bugs\\n- Improvements\\n- Security issues\\n- Best practices\\n\\n`;\n\nfor (const f of $input.all()) {\n  prompt += `File: ${f.json.filename}\\n${f.json.patch || 'No diff available'}\\n\\n`;\n}\n\nreturn [{ json: { prompt } }];"
+      },
+      "id": "fc701c3b-ce66-4fca-8f1b-6fbd1532efdb",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {}
+      },
+      "id": "e30a6041-4482-4d2d-a97c-98f66d477a35",
+      "name": "Code Review Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        1392,
+        -416
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "id": "298cb833-e6a8-4878-9da9-3079ec42a072",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -96
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "gaMSmQtLHiHKmU3j",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const pr = $('PR Trigger').first().json.body.pull_request;\n\nreturn [{\n  json: {\n    repo: $('PR Trigger').first().json.body.pull_request.base.repo.full_name,\n    prNumber: $('PR Trigger').first().json.body.pull_request.number,\n    comment: $json.text || $json.content || $json\n  }\n}];\n"
+      },
+      "id": "1af9d153-8a6f-4ac5-9158-f7c3f11d0349",
+      "name": "Prepare PR Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{`https://api.github.com/repos/${$json.repo}/issues/${$json.prNumber}/comments`}}\n",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"body\": \"{{ $json.comment }}\"\n}\n",
+        "options": {}
+      },
+      "id": "3bc722f5-a5ab-4a9d-8915-b4d1b8ef7d62",
+      "name": "Post PR Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1840,
+        -304
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "O3mhFBslBIPr5VwW",
+          "name": "GitHub account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "PR Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter PR Opened",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter PR Opened": {
+      "main": [
+        [
+          {
+            "node": "Get PR Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PR Files": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Code Review Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Review Agent": {
+      "main": [
+        [
+          {
+            "node": "Prepare PR Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Code Review Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare PR Comment": {
+      "main": [
+        [
+          {
+            "node": "Post PR Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fcb559f3d87ce632433d85e66991504a68c910068663a4d683a01922ceba55a0"
+  }
+}

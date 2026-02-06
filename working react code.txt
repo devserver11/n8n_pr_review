@@ -1,0 +1,71 @@
+import React, { useState } from 'react';
+import axios from 'axios';
+import './App.css';
+
+function App() {
+  const [file, setFile] = useState(null);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setLoading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await axios.post('http://localhost:8000/upload', formData);
+      setResults(response.data.elements || []); // ✅ SAFETY ONLY
+    } catch (error) {
+      console.error("Error uploading file", error);
+      alert("Failed to parse PDF");
+      setResults([]); // ✅ SAFETY ONLY
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="App" style={{ padding: '20px', maxWidth: '900px', margin: 'auto' }}>
+      <h1>Docling PDF Parser</h1>
+      <input type="file" onChange={(e) => setFile(e.target.files[0])} accept=".pdf" />
+      <button onClick={handleUpload} disabled={loading}>
+        {loading ? 'Processing...' : 'Upload and Parse'}
+      </button>
+
+      <hr />
+
+      <div className="output">
+        {results.map((el, idx) => (
+          <div key={idx} style={{ marginBottom: '20px' }}>
+            {el.type === 'text' && (
+              <p
+                className={el.label}
+                style={{ fontWeight: el.label === 'section_header' ? 'bold' : 'normal' }}
+              >
+                {el.content}
+              </p>
+            )}
+
+            {el.type === 'table' && (
+              <table border="1" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <tbody>
+                  {el.content.map((row, rIdx) => (
+                    <tr key={rIdx}>
+                      {row.map((cell, cIdx) => (
+                        <td key={cIdx} style={{ padding: '8px' }}>
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default App;

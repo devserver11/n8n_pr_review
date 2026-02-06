@@ -1,0 +1,185 @@
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from docling.document_converter import DocumentConverter
+from docling.datamodel.document import TableItem, TextItem
+import tempfile
+import os
+import time
+import logging
+import uuid
+
+# -------------------- NEW IMPORTS (ADDED) --------------------
+from qdrant_client import QdrantClient
+from qdrant_client.models import VectorParams, Distance
+import google.generativeai as genai
+# ------------------------------------------------------------
+
+# ---------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------
+# Initialize converter (UNCHANGED)
+# ---------------------------------------------------
+converter = DocumentConverter()
+
+# ---------------------------------------------------
+# Qdrant setup (ADDED)
+# ---------------------------------------------------
+QDRANT_COLLECTION = "pdf_text_chunks"
+
+qdrant = QdrantClient(
+    url="https://a40b9307-8c3f-4133-a611-a0e8b621ea2f.us-east4-0.gcp.cloud.qdrant.io:6333",
+    api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.umH1S_y3sCmefMiLVmY5XR0Um_8CFUdqSHTzB2lwZmI"
+)
+
+
+if not qdrant.collection_exists(QDRANT_COLLECTION):
+    qdrant.create_collection(
+        collection_name=QDRANT_COLLECTION,
+        vectors_config=VectorParams(
+            size=768,  # Gemini embedding-005
+            distance=Distance.COSINE
+        )
+    )
+
+# ---------------------------------------------------
+# Gemini Embedding setup (ADDED)
+# ---------------------------------------------------
+genai.configure(
+    api_key="AIzaSyBiD_RonTR8ij-oMIrSYMC4mGsjhZ8Tzeo"
+)
+
+def embed_text(text: str):
+    response = genai.embed_content(
+        model="models/text-embedding-004",
+        content=text,
+        task_type="retrieval_document"
+    )
+    return response["embedding"]
+
+
+# ---------------------------------------------------
+# Upload endpoint (LOGIC UNCHANGED, ONLY ADDITIONS)
+# ---------------------------------------------------
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    start_total_time = time.perf_counter()
+
+    # 1. Save uploaded file
+    start_io_time = time.perf_counter()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+    io_time = time.perf_counter() - start_io_time
+
+    file_size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+
+    logger.info(
+        f"Upload received | file={file.filename} | size={file_size_mb:.2f}MB"
+    )
+
+    try:
+        # 2. Convert PDF
+        start_parse_time = time.perf_counter()
+        result = converter.convert(tmp_path)
+        doc = result.document
+        parse_time = time.perf_counter() - start_parse_time
+
+        output_elements = []
+
+        # 3. Iterate document items (UNCHANGED FLOW)
+        start_extract_time = time.perf_counter()
+        for idx, (item, _level) in enumerate(doc.iterate_items()):
+            if isinstance(item, TextItem):
+                text_content = item.text
+
+                # -------- EXISTING RESPONSE LOGIC (UNCHANGED) --------
+                output_elements.append({
+                    "type": "text",
+                    "content": text_content,
+                    "label": item.label.value if hasattr(item.label, 'value') else str(item.label)
+                })
+
+                # -------- NEW: EMBED + STORE IN QDRANT --------
+                embedding = embed_text(text_content)
+
+                qdrant.upsert(
+                    collection_name=QDRANT_COLLECTION,
+                    points=[
+                        {
+                            "id": str(uuid.uuid4()),
+                            "vector": embedding,
+                            "payload": {
+                                "text": text_content,
+                                "label": item.label.value if hasattr(item.label, 'value') else str(item.label),
+                                "file_name": file.filename,
+                                "chunk_index": idx
+                            }
+                        }
+                    ]
+                )
+
+            elif isinstance(item, TableItem):
+                table_grid = item.export_to_dataframe().values.tolist()
+                headers = item.export_to_dataframe().columns.tolist()
+                full_table = [headers] + table_grid
+
+                output_elements.append({
+                    "type": "table",
+                    "content": full_table
+                })
+
+        extract_time = time.perf_counter() - start_extract_time
+        total_time = time.perf_counter() - start_total_time
+
+        # ---------------------------------------------------
+        # Final performance log
+        # ---------------------------------------------------
+        logger.info(
+            "PDF parsed successfully | "
+            f"file={file.filename} | "
+            f"io={io_time:.2f}s | "
+            f"parse={parse_time:.2f}s | "
+            f"extract={extract_time:.2f}s | "
+            f"total={total_time:.2f}s"
+        )
+
+        return {
+            "elements": output_elements
+        }
+
+    except Exception as e:
+        logger.exception(
+            f"PDF parsing failed | file={file.filename} | error={str(e)}"
+        )
+        return {"error": str(e)}
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+# ---------------------------------------------------
+# Local run
+# ---------------------------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
